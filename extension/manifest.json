@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "RunReady Kiosk Auth",
+  "version": "1.0.0",
+  "description": "Injects display auth and org settings before the Operations app loads.",
+  "content_scripts": [
+    {
+      "matches": ["https://ops.runready.app/*"],
+      "js": ["config.generated.js", "inject.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
