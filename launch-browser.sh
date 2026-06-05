@@ -22,9 +22,10 @@ EXTENSION_DIR="${SCRIPT_DIR}/extension"
 
 mkdir -p "$PROFILE_DIR" "$LOG_DIR" "$(dirname "$PID_FILE")"
 
-# Wait until autologin desktop session exists (no-op if already exported by watchdog).
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/wait-for-display.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/chromium-process.sh"
 
 DESKTOP_USER="${RUNREADY_DESKTOP_USER:?Desktop user not set}"
 
@@ -48,8 +49,8 @@ if [[ -z "$CHROMIUM" ]]; then
   exit 1
 fi
 
-# Profile must be writable by the desktop user running Chromium.
 chown -R "${DESKTOP_USER}:${DESKTOP_USER}" "$PROFILE_DIR" 2>/dev/null || true
+chmod -R a+rX "${EXTENSION_DIR}" 2>/dev/null || true
 
 CHROMIUM_FLAGS=(
   --kiosk
@@ -61,6 +62,7 @@ CHROMIUM_FLAGS=(
   --disable-translate
   --disable-features=TranslateUI
   --check-for-update-interval=31536000
+  --disable-dev-shm-usage
   --load-extension="${EXTENSION_DIR}"
   "--user-data-dir=${PROFILE_DIR}"
   --window-size=1920,1080
@@ -86,13 +88,11 @@ if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
   RUN_ENV+=("WAYLAND_DISPLAY=${WAYLAND_DISPLAY}")
 fi
 
-# Hide cursor on wall displays (X11 only)
 if [[ "${RUNREADY_HIDE_CURSOR:-true}" == "true" ]] && command -v unclutter >/dev/null 2>&1; then
   pkill -x unclutter 2>/dev/null || true
   sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" unclutter -idle 5 -root &
 fi
 
-# Prevent screen blanking (X11 only)
 if [[ "${RUNREADY_SESSION_TYPE:-}" == "x11" ]] && command -v xset >/dev/null 2>&1; then
   sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" xset s off 2>/dev/null || true
   sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" xset -dpms 2>/dev/null || true
@@ -101,24 +101,17 @@ fi
 
 echo "[$(date -Iseconds)] Starting ${CHROMIUM} as ${DESKTOP_USER} (${RUNREADY_SESSION_TYPE:-unknown}) -> ${DISPLAY_URL}" >>"$LOG_DIR/browser.log"
 
-# Run as desktop user so X/Wayland credentials match the autologin session.
 sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" \
   "$CHROMIUM" "${CHROMIUM_FLAGS[@]}" >>"$LOG_DIR/chromium-stdout.log" 2>>"$LOG_DIR/chromium-stderr.log" &
 
-sleep 2
-pid=""
-pid="$(pgrep -u "$DESKTOP_USER" -f "--user-data-dir=${PROFILE_DIR}" 2>/dev/null | head -1 || true)"
-if [[ -z "$pid" ]]; then
-  pid="$(pgrep -u "$DESKTOP_USER" -x chromium 2>/dev/null | head -1 || true)"
-fi
-if [[ -z "$pid" ]]; then
-  pid="$(pgrep -u "$DESKTOP_USER" -x chromium-browser 2>/dev/null | head -1 || true)"
-fi
+# Wait for the browser process tree to settle (launcher PIDs exit quickly on some builds).
+for _ in 1 2 3 4 5 6; do
+  sleep 2
+  if write_kiosk_chromium_pid_file "$PID_FILE"; then
+    exit 0
+  fi
+done
 
-if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
-  echo "Chromium exited immediately — see ${LOG_DIR}/chromium-stderr.log" >&2
-  tail -20 "$LOG_DIR/chromium-stderr.log" 2>/dev/null >&2 || true
-  exit 1
-fi
-
-echo "$pid" >"$PID_FILE"
+echo "Chromium exited or never started — see ${LOG_DIR}/chromium-stderr.log" >&2
+tail -30 "$LOG_DIR/chromium-stderr.log" 2>/dev/null >&2 || true
+exit 1

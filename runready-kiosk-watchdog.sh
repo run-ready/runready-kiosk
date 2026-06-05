@@ -17,43 +17,42 @@ if [[ -f "$CONFIG_FILE" ]]; then
   source "$CONFIG_FILE"
 fi
 
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/chromium-process.sh"
+
 DEPLOY_INTERVAL="${RUNREADY_CHECK_DEPLOY_INTERVAL_SEC:-300}"
 TOKEN_INTERVAL="${RUNREADY_TOKEN_REFRESH_INTERVAL_SEC:-21600}"
 HEALTH_INTERVAL="${RUNREADY_BROWSER_HEALTH_INTERVAL_SEC:-60}"
+MIN_UPTIME_BEFORE_RESTART_SEC="${RUNREADY_MIN_UPTIME_BEFORE_RESTART_SEC:-45}"
 
 last_deploy_check=0
 last_token_refresh=0
 last_health_check=0
+last_start_epoch=0
+consecutive_dead_checks=0
 
 stop_browser() {
-  if [[ -f "$PID_FILE" ]]; then
-    pid=$(cat "$PID_FILE" 2>/dev/null || true)
-    if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
-      log "Stopping browser (pid $pid)"
-      kill "$pid" 2>/dev/null || true
-      sleep 2
-      kill -9 "$pid" 2>/dev/null || true
-    fi
-    rm -f "$PID_FILE"
-  fi
-  pkill -x unclutter 2>/dev/null || true
+  stop_kiosk_chromium
+  rm -f "$PID_FILE"
 }
 
 start_browser() {
   stop_browser
   if ! "$SCRIPT_DIR/launch-browser.sh"; then
     log "ERROR: Browser failed to start (see ${LOG_DIR}/chromium-stderr.log)"
+    if [[ -f "${LOG_DIR}/chromium-stderr.log" ]]; then
+      tail -5 "$LOG_DIR/chromium-stderr.log" | while read -r line; do log "  stderr: $line"; done
+    fi
     return 1
   fi
-  log "Browser started"
+  last_start_epoch=$(date +%s)
+  consecutive_dead_checks=0
+  log "Browser started (pid $(cat "$PID_FILE" 2>/dev/null || echo '?'))"
 }
 
 browser_alive() {
-  if [[ ! -f "$PID_FILE" ]]; then
-    return 1
-  fi
-  pid=$(cat "$PID_FILE" 2>/dev/null || true)
-  [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null
+  write_kiosk_chromium_pid_file "$PID_FILE" 2>/dev/null || true
+  kiosk_chromium_running
 }
 
 reload_browser() {
@@ -63,7 +62,6 @@ reload_browser() {
 
 log "RunReady kiosk watchdog starting"
 
-# Initial token refresh + browser launch (retry until display session is up)
 if "$SCRIPT_DIR/refresh-token.sh" >>"$LOG_DIR/watchdog.log" 2>&1; then
   :
 else
@@ -80,9 +78,20 @@ while true; do
 
   if (( now - last_health_check >= HEALTH_INTERVAL )); then
     last_health_check=$now
-    if ! browser_alive; then
-      log "Browser not running — restarting"
-      start_browser
+    if browser_alive; then
+      consecutive_dead_checks=0
+    else
+      consecutive_dead_checks=$((consecutive_dead_checks + 1))
+      uptime=$((now - last_start_epoch))
+      if (( uptime < MIN_UPTIME_BEFORE_RESTART_SEC && consecutive_dead_checks < 2 )); then
+        log "Browser process not detected yet (${uptime}s uptime, check ${consecutive_dead_checks}/2) — waiting"
+      else
+        log "Browser not running — restarting (uptime ${uptime}s)"
+        if [[ -f "${LOG_DIR}/chromium-stderr.log" ]]; then
+          tail -5 "$LOG_DIR/chromium-stderr.log" | while read -r line; do log "  stderr: $line"; done
+        fi
+        start_browser || true
+      fi
     fi
   fi
 

@@ -52,4 +52,10 @@ var RUNREADY_KIOSK = {
 };
 EOF
 
-chmod 600 "$OUTPUT"
+chmod 644 "$OUTPUT"
+# Chromium runs as the desktop user — it must be able to read the extension scripts.
+if [[ -n "${RUNREADY_DESKTOP_USER:-}" ]] && id "${RUNREADY_DESKTOP_USER}" &>/dev/null; then
+  chown root:"$(id -gn "${RUNREADY_DESKTOP_USER}")" "$OUTPUT" 2>/dev/null || chmod a+r "$OUTPUT"
+else
+  chmod a+r "$OUTPUT"
+fi

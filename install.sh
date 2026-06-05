@@ -54,6 +54,9 @@ fi
 
 chown -R root:root "$INSTALL_DIR" "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
+# Extension must be readable by the desktop user running Chromium.
+chmod -R a+rX "${INSTALL_DIR}/extension"
+find "${INSTALL_DIR}/extension" -type f \( -name '*.js' -o -name '*.json' \) -exec chmod a+r {} \;
 
 DESKTOP_USER="pi"
 if [[ -d /etc/lightdm ]]; then
