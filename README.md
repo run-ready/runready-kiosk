@@ -159,6 +159,30 @@ To force an immediate reload:
 sudo systemctl restart runready-kiosk.service
 ```
 
+## Uninstall
+
+Stop the kiosk and remove installed scripts (keeps config and browser profile for easy reinstall):
+
+```bash
+sudo /opt/runready-kiosk/uninstall.sh
+```
+
+Or from the public repo before install, or after `/opt/runready-kiosk` was removed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/run-ready/runready-kiosk/main/uninstall.sh | sudo bash
+```
+
+Remove **everything** including auth token config, logs, and Chromium profile:
+
+```bash
+sudo /opt/runready-kiosk/uninstall.sh --purge
+# or
+curl -fsSL https://raw.githubusercontent.com/run-ready/runready-kiosk/main/uninstall.sh | sudo bash -s -- --purge
+```
+
+This does **not** remove `chromium`, `unclutter`, or other apt packages installed by `install.sh`.
+
 ## Configuration reference
 
 | Variable | Default | Description |
