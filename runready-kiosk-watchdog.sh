@@ -41,7 +41,10 @@ stop_browser() {
 
 start_browser() {
   stop_browser
-  "$SCRIPT_DIR/launch-browser.sh"
+  if ! "$SCRIPT_DIR/launch-browser.sh"; then
+    log "ERROR: Browser failed to start (see ${LOG_DIR}/chromium-stderr.log)"
+    return 1
+  fi
   log "Browser started"
 }
 
@@ -60,14 +63,17 @@ reload_browser() {
 
 log "RunReady kiosk watchdog starting"
 
-# Initial token refresh + browser launch
+# Initial token refresh + browser launch (retry until display session is up)
 if "$SCRIPT_DIR/refresh-token.sh" >>"$LOG_DIR/watchdog.log" 2>&1; then
   :
 else
   log "WARN: Initial token refresh failed — starting browser anyway"
 fi
 
-start_browser
+until start_browser; do
+  log "Browser start failed — retrying in 10s (desktop session may still be starting)"
+  sleep 10
+done
 
 while true; do
   now=$(date +%s)

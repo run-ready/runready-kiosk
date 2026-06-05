@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${RUNREADY_KIOSK_CONFIG:-/etc/runready-kiosk/config.env}"
 PID_FILE="${RUNREADY_BROWSER_PID_FILE:-/var/run/runready-kiosk/chromium.pid}"
+LOG_DIR="${RUNREADY_LOG_DIR:-/var/log/runready-kiosk}"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Missing config: $CONFIG_FILE" >&2
@@ -18,9 +19,14 @@ source "$CONFIG_FILE"
 DISPLAY_URL="${RUNREADY_DISPLAY_URL:-https://ops.runready.app/cad}"
 PROFILE_DIR="${RUNREADY_CHROMIUM_PROFILE_DIR:-/var/lib/runready-kiosk/chromium}"
 EXTENSION_DIR="${SCRIPT_DIR}/extension"
-LOG_DIR="${RUNREADY_LOG_DIR:-/var/log/runready-kiosk}"
 
 mkdir -p "$PROFILE_DIR" "$LOG_DIR" "$(dirname "$PID_FILE")"
+
+# Wait until autologin desktop session exists (no-op if already exported by watchdog).
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/wait-for-display.sh"
+
+DESKTOP_USER="${RUNREADY_DESKTOP_USER:?Desktop user not set}"
 
 "$SCRIPT_DIR/generate-extension-config.sh"
 
@@ -42,20 +48,8 @@ if [[ -z "$CHROMIUM" ]]; then
   exit 1
 fi
 
-export DISPLAY="${DISPLAY:-:0}"
-
-# Hide cursor on wall displays
-if [[ "${RUNREADY_HIDE_CURSOR:-true}" == "true" ]] && command -v unclutter >/dev/null 2>&1; then
-  pkill -x unclutter 2>/dev/null || true
-  unclutter -idle 5 -root &
-fi
-
-# Prevent screen blanking
-if command -v xset >/dev/null 2>&1; then
-  xset s off 2>/dev/null || true
-  xset -dpms 2>/dev/null || true
-  xset s noblank 2>/dev/null || true
-fi
+# Profile must be writable by the desktop user running Chromium.
+chown -R "${DESKTOP_USER}:${DESKTOP_USER}" "$PROFILE_DIR" 2>/dev/null || true
 
 CHROMIUM_FLAGS=(
   --kiosk
@@ -71,11 +65,60 @@ CHROMIUM_FLAGS=(
   "--user-data-dir=${PROFILE_DIR}"
   --window-size=1920,1080
   --start-fullscreen
-  "${DISPLAY_URL}"
 )
 
-echo "[$(date -Iseconds)] Starting ${CHROMIUM} -> ${DISPLAY_URL}" >>"$LOG_DIR/browser.log"
+if [[ "${RUNREADY_SESSION_TYPE:-}" == "wayland" ]]; then
+  CHROMIUM_FLAGS+=(--ozone-platform=wayland)
+fi
 
-# Run in background so watchdog can supervise
-nohup "$CHROMIUM" "${CHROMIUM_FLAGS[@]}" >>"$LOG_DIR/chromium-stdout.log" 2>>"$LOG_DIR/chromium-stderr.log" &
-echo $! >"$PID_FILE"
+CHROMIUM_FLAGS+=("${DISPLAY_URL}")
+
+RUN_ENV=(
+  "DISPLAY=${DISPLAY:-:0}"
+)
+if [[ -n "${XAUTHORITY:-}" ]]; then
+  RUN_ENV+=("XAUTHORITY=${XAUTHORITY}")
+fi
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  RUN_ENV+=("XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
+fi
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  RUN_ENV+=("WAYLAND_DISPLAY=${WAYLAND_DISPLAY}")
+fi
+
+# Hide cursor on wall displays (X11 only)
+if [[ "${RUNREADY_HIDE_CURSOR:-true}" == "true" ]] && command -v unclutter >/dev/null 2>&1; then
+  pkill -x unclutter 2>/dev/null || true
+  sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" unclutter -idle 5 -root &
+fi
+
+# Prevent screen blanking (X11 only)
+if [[ "${RUNREADY_SESSION_TYPE:-}" == "x11" ]] && command -v xset >/dev/null 2>&1; then
+  sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" xset s off 2>/dev/null || true
+  sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" xset -dpms 2>/dev/null || true
+  sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" xset s noblank 2>/dev/null || true
+fi
+
+echo "[$(date -Iseconds)] Starting ${CHROMIUM} as ${DESKTOP_USER} (${RUNREADY_SESSION_TYPE:-unknown}) -> ${DISPLAY_URL}" >>"$LOG_DIR/browser.log"
+
+# Run as desktop user so X/Wayland credentials match the autologin session.
+sudo -u "$DESKTOP_USER" env "${RUN_ENV[@]}" \
+  "$CHROMIUM" "${CHROMIUM_FLAGS[@]}" >>"$LOG_DIR/chromium-stdout.log" 2>>"$LOG_DIR/chromium-stderr.log" &
+
+sleep 2
+pid=""
+pid="$(pgrep -u "$DESKTOP_USER" -f "--user-data-dir=${PROFILE_DIR}" 2>/dev/null | head -1 || true)"
+if [[ -z "$pid" ]]; then
+  pid="$(pgrep -u "$DESKTOP_USER" -x chromium 2>/dev/null | head -1 || true)"
+fi
+if [[ -z "$pid" ]]; then
+  pid="$(pgrep -u "$DESKTOP_USER" -x chromium-browser 2>/dev/null | head -1 || true)"
+fi
+
+if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+  echo "Chromium exited immediately — see ${LOG_DIR}/chromium-stderr.log" >&2
+  tail -20 "$LOG_DIR/chromium-stderr.log" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+echo "$pid" >"$PID_FILE"

@@ -212,7 +212,9 @@ Because injection happens before React loads, the app sees a normal signed-in se
 | Symptom | Check |
 |---------|--------|
 | Login screen on display | Run `verify-config.sh`; token may be invalid or user disabled |
-| Blank screen | `journalctl -u runready-kiosk`; ensure desktop autologin and `DISPLAY=:0` |
+| Blank screen after reboot | Service may start before desktop autologin finishes. Check `tail -f /var/log/runready-kiosk/watchdog.log` for “Waiting for graphical session”. Ensure `RUNREADY_DESKTOP_USER` in config matches your autologin user (`pi` or other). Run `sudo systemctl restart runready-kiosk.service` after desktop is up. Re-install latest bundle if needed. |
+| Browser worked once, not after reboot | `tail -20 /var/log/runready-kiosk/chromium-stderr.log` — often X11/Wayland not ready or wrong user. Update kiosk scripts from the public repo and restart the service. |
+| Blank screen | `journalctl -u runready-kiosk`; ensure desktop autologin and `RUNREADY_DESKTOP_USER` |
 | Wrong organization | Update `RUNREADY_ORGANIZATION_ID` and restart |
 | Maps not loading | Maps key is baked at deploy time — not a Pi issue |
 | Cursor visible | Install `unclutter`: `sudo apt install unclutter` |

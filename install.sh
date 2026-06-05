@@ -55,18 +55,34 @@ fi
 chown -R root:root "$INSTALL_DIR" "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
+DESKTOP_USER="pi"
+if [[ -d /etc/lightdm ]]; then
+  detected="$(grep -rhE '^[[:space:]]*autologin-user=' /etc/lightdm 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+  if [[ -n "$detected" ]] && id "$detected" &>/dev/null; then
+    DESKTOP_USER="$detected"
+  fi
+fi
+
+if ! grep -q '^RUNREADY_DESKTOP_USER=' "$CONFIG_FILE" 2>/dev/null; then
+  echo "RUNREADY_DESKTOP_USER=\"${DESKTOP_USER}\"" >>"$CONFIG_FILE"
+  echo "Recorded desktop user ${DESKTOP_USER} in ${CONFIG_FILE}"
+fi
+
+mkdir -p /var/lib/runready-kiosk/chromium
+chown -R "${DESKTOP_USER}:${DESKTOP_USER}" /var/lib/runready-kiosk/chromium 2>/dev/null || true
+
 # systemd unit
 cat >/etc/systemd/system/${SERVICE_NAME} <<EOF
 [Unit]
 Description=RunReady Operations wall display kiosk
-After=graphical.target network-online.target
-Wants=network-online.target
+After=graphical.target network-online.target display-manager.service
+Wants=network-online.target graphical.target
+# Lightdm may be the display manager on Raspberry Pi OS
+After=lightdm.service
 
 [Service]
 Type=simple
 User=root
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/$(logname 2>/dev/null || echo pi)/.Xauthority
 Environment=RUNREADY_KIOSK_CONFIG=${CONFIG_FILE}
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/runready-kiosk-watchdog.sh
